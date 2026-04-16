@@ -1,6 +1,6 @@
 {
   "name": "pi-qmd-smart",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Toggle QMD memory context between 3 modes (full/hybrid/none) — directly from the pi terminal UI",
   "type": "module",
   "files": [
