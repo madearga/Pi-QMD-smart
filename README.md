@@ -1,6 +1,6 @@
-# qmd-smart
+# Pi-QMD-smart
 
-Toggle QMD memory context between 3 modes directly from the terminal.
+⚡ Unified memory control panel for pi — toggle all memory extensions from one UI.
 
 ## Install
 
@@ -14,26 +14,67 @@ Then reload: `/reload`
 
 | Action | How |
 |---|---|
-| Open mode selector | `Ctrl+Alt+M` or `/qmd` |
-| Navigate | `↑` `↓` or `←` `→` |
-| Quick select | `1` (full) `2` (hybrid) `3` (none) |
-| Cycle modes | `Tab` |
-| Confirm | `Enter` |
+| Open control panel | `Ctrl+Alt+M` or `/qmd` or `/memory` |
+| Navigate | `↑` `↓` |
+| Toggle item | `Enter` or `Tab` |
+| Quick toggle | `1` (QMD) `2` (Self-Learning) `3` (Pi-Memory) |
+| QMD quick mode | `F` (full) `H` (hybrid) `N` (none) |
+| Toggle all on/off | `A` |
+| Save & close | `S` |
 | Cancel | `Esc` |
 
-## Modes
+## Control Panel UI
 
-### ● FULL — Auto-inject (~14K tokens/turn)
+```
+  ⚡  Memory Control Panel
+  ──────────────────────────────────────────────────────────
 
-Like pi-memory. Before every turn, automatically searches QMD and injects results into the system prompt. Most context, highest token cost.
+ ❯  ✓  🔍  QMD Search
+           Search past context via QMD (keyword/semantic/deep)
+           Mode: ◐ HYBRID  (~100B/turn)  ✅
 
-### ◐ HYBRID — On-demand (~100B tokens/turn) ← default
+    ✓  🧠  Self-Learning
+           Auto-reflect after tasks, learn from mistakes
+           ● ON  (active)
 
-Registers the `recall` tool and adds a light hint to the system prompt. Agent searches only when it needs to. Best balance of context and token efficiency.
+    ✓  📝  Pi-Memory
+           Inject MEMORY.md, scratchpad, daily logs
+           ● ON  (active)
 
-### ○ NONE — No context (0 tokens/turn)
+  ──────────────────────────────────────────────────────────
+  💰  Est. injection: ~14K/turn
+  ──────────────────────────────────────────────────────────
+  ↑↓ Nav  Enter/Tab Toggle  1/2/3 Quick  A All  S Save  Esc Cancel
+  F Full  H Hybrid  N None (QMD quick)
+```
 
-No injection, no hint. The `recall` tool still exists but returns a "disabled" message. Maximum token savings.
+## What It Controls
+
+### 1. QMD Search (🔍)
+
+| Mode | Token Cost | Behavior |
+|---|---|---|
+| **FULL** | ~14K/turn | Auto-search QMD every turn + inject results |
+| **HYBRID** | ~100B/turn | `recall` tool available, agent searches when needed |
+| **NONE** | 0/turn | No search, no hint, `recall` returns "disabled" |
+
+### 2. Self-Learning (🧠)
+
+Controls [pi-self-learning](https://www.npmjs.com/package/pi-self-learning):
+
+| State | Behavior |
+|---|---|
+| **ON** | Auto-reflect after tasks, CORE.md injected (~4K/turn) |
+| **OFF** | Suppresses reflection + context injection |
+
+### 3. Pi-Memory (📝)
+
+Controls [pi-memory](https://github.com/jayzeng/pi-memory):
+
+| State | Behavior |
+|---|---|
+| **ON** | MEMORY.md + scratchpad + daily logs injected (~10K/turn) |
+| **OFF** | Suppresses context injection via `PI_MEMORY_NO_SEARCH=1` |
 
 ## The `recall` Tool
 
@@ -41,8 +82,8 @@ Available in FULL and HYBRID modes (returns disabled message in NONE).
 
 ```
 recall({ query: "auth decision", mode: "keyword" })
-recall({ query: "why did we choose postgresql", mode: "semantic" })
-recall({ query: "database migration plan", mode: "deep", limit: 10 })
+recall({ query: "why postgresql", mode: "semantic" })
+recall({ query: "migration plan", mode: "deep", limit: 10 })
 ```
 
 | Mode | Speed | Method |
@@ -53,23 +94,34 @@ recall({ query: "database migration plan", mode: "deep", limit: 10 })
 
 ## State
 
-Current mode is saved to `~/.pi/agent/qmd-smart-state.json` and persists across restarts.
+Saved to `~/.pi/agent/qmd-smart-state.json`, persists across restarts.
 
-## Requirements
+## Recommended Setup
 
-- [QMD](https://github.com/tobi/qmd) must be installed for search to work
-- Extension still functions without QMD (mode selector works, search returns install instructions)
+```bash
+# Install all three extensions
+pi install npm:pi-self-learning
+pi install npm:pi-memory
+pi install /Users/madearga/pi-extensions/qmd-smart
 
-## Comparison with pi-memory
+# Then use Ctrl+Alt+M to control everything from one panel
+```
 
-| | pi-memory | qmd-smart |
-|---|---|---|
-| Auto-inject | Always on | Toggleable (full/hybrid/none) |
-| Token control | No | Yes — 3 modes |
-| Memory write | ✅ | ❌ (use pi-memory for that) |
-| Scratchpad | ✅ | ❌ |
-| Session handoff | ✅ | ❌ |
-| recall tool | ❌ | ✅ |
-| Mode selector UI | ❌ | ✅ |
+## Keyboard Shortcuts
 
-**Tip:** Use both! Install pi-memory for write/scratchpad/handoff, and qmd-smart for controlled injection. Set pi-memory's `PI_MEMORY_NO_SEARCH=1` to disable its auto-inject, then use qmd-smart's modes to control when QMD runs.
+| Key | Action |
+|---|---|
+| `Ctrl+Alt+M` | Open control panel |
+| `/qmd` | Open control panel (command) |
+| `/memory` | Open control panel (command) |
+| `↑` `↓` | Navigate between items |
+| `Enter` / `Tab` | Toggle selected item |
+| `1` `2` `3` | Quick toggle items |
+| `F` / `H` / `N` | QMD mode: Full / Hybrid / None |
+| `A` | Toggle all on/off |
+| `S` | Save & close |
+| `Esc` | Cancel (revert changes) |
+
+## License
+
+MIT

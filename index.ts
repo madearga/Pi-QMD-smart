@@ -1,12 +1,12 @@
 /**
- * QMD Smart Context Extension
+ * QMD Smart Context — Unified Memory Control Panel
  *
- * Toggle between 3 memory context modes with a terminal UI:
- *   FULL   — Auto-inject QMD search results every turn (like pi-memory)
- *   HYBRID — On-demand recall tool + system hint (token efficient) ← default
- *   NONE   — No memory context at all
+ * One UI to toggle all memory extensions:
+ *   1. QMD Search        — full / hybrid / none
+ *   2. Self-Learning      — on / off (pi-self-learning)
+ *   3. Pi-Memory Inject   — on / off (pi-memory context injection)
  *
- * Shortcut: Ctrl+Alt+M   Command: /qmd
+ * Shortcut: Ctrl+Alt+M   Command: /qmd   Command: /memory
  */
 
 import { execFile } from "node:child_process";
@@ -17,59 +17,85 @@ import { Key, matchesKey, type Component, type Focusable } from "@mariozechner/p
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type MemoryMode = "full" | "hybrid" | "none";
+type QmdMode = "full" | "hybrid" | "none";
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+interface PanelState {
+  qmd: QmdMode;
+  selfLearning: boolean;
+  piMemory: boolean;
+}
 
-const MODE_LIST: MemoryMode[] = ["full", "hybrid", "none"];
-
-const MODE_CONFIG: Record<MemoryMode, {
+interface PanelRow {
+  key: keyof PanelState;
   label: string;
   icon: string;
   desc: string;
-  tokens: string;
-  color: string;
-}> = {
-  full: {
-    label: "FULL",
-    icon: "●",
-    desc: "Auto-inject QMD results every turn + recall tool",
-    tokens: "~14K tokens/turn",
-    color: "green",
-  },
-  hybrid: {
-    label: "HYBRID",
-    icon: "◐",
-    desc: "On-demand recall tool + light system hint",
-    tokens: "~100B tokens/turn",
-    color: "yellow",
-  },
-  none: {
-    label: "NONE",
-    icon: "○",
-    desc: "No memory context injection at all",
-    tokens: "0 tokens/turn",
-    color: "red",
-  },
+  type: "qmd" | "toggle";
+}
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+const QMD_MODES: QmdMode[] = ["full", "hybrid", "none"];
+
+const QMD_LABELS: Record<QmdMode, { icon: string; label: string; color: string }> = {
+  full:   { icon: "●", label: "FULL",    color: "green" },
+  hybrid: { icon: "◐", label: "HYBRID",  color: "yellow" },
+  none:   { icon: "○", label: "NONE",    color: "red" },
 };
+
+const PANEL_ROWS: PanelRow[] = [
+  {
+    key: "qmd",
+    label: "QMD Search",
+    icon: "🔍",
+    desc: "Search past context via QMD (keyword/semantic/deep)",
+    type: "qmd",
+  },
+  {
+    key: "selfLearning",
+    label: "Self-Learning",
+    icon: "🧠",
+    desc: "Auto-reflect after tasks, learn from mistakes",
+    type: "toggle",
+  },
+  {
+    key: "piMemory",
+    label: "Pi-Memory",
+    icon: "📝",
+    desc: "Inject MEMORY.md, scratchpad, daily logs",
+    type: "toggle",
+  },
+];
 
 const STATE_DIR = path.join(process.env.HOME || "~", ".pi", "agent");
 const STATE_FILE = path.join(STATE_DIR, "qmd-smart-state.json");
 
-// ─── State ───────────────────────────────────────────────────────────────────
+// ─── State Persistence ───────────────────────────────────────────────────────
 
-function loadState(): MemoryMode {
+const DEFAULT_STATE: PanelState = {
+  qmd: "hybrid",
+  selfLearning: true,
+  piMemory: true,
+};
+
+function loadState(): PanelState {
   try {
-    const data = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
-    if (MODE_LIST.includes(data.mode)) return data.mode;
-  } catch { /* fall through */ }
-  return "hybrid";
+    const raw = fs.readFileSync(STATE_FILE, "utf-8");
+    const data = JSON.parse(raw);
+    return {
+      qmd: QMD_MODES.includes(data.qmd) ? data.qmd : DEFAULT_STATE.qmd,
+      selfLearning: typeof data.selfLearning === "boolean" ? data.selfLearning : DEFAULT_STATE.selfLearning,
+      piMemory: typeof data.piMemory === "boolean" ? data.piMemory : DEFAULT_STATE.piMemory,
+    };
+  } catch {
+    return { ...DEFAULT_STATE };
+  }
 }
 
-function saveState(mode: MemoryMode): void {
+function saveState(state: PanelState): void {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify({
-    mode,
+    ...state,
     updated: new Date().toISOString(),
   }));
 }
@@ -84,6 +110,39 @@ function detectQmd(): Promise<boolean> {
       resolve(!err);
     });
   });
+}
+
+/** Check if pi-self-learning is installed by looking for its settings. */
+function detectSelfLearning(): boolean {
+  try {
+    // Check if the npm package is installed
+    const paths = [
+      path.join(STATE_DIR, "..", "node_modules", "pi-self-learning", "package.json"),
+      "/opt/homebrew/lib/node_modules/pi-self-learning/package.json",
+    ];
+    for (const p of paths) {
+      if (fs.existsSync(p)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Check if pi-memory is installed. */
+function detectPiMemory(): boolean {
+  try {
+    const paths = [
+      path.join(STATE_DIR, "..", "node_modules", "pi-memory", "package.json"),
+      "/opt/homebrew/lib/node_modules/pi-memory/package.json",
+    ];
+    for (const p of paths) {
+      if (fs.existsSync(p)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 // ─── QMD Search ──────────────────────────────────────────────────────────────
@@ -103,7 +162,6 @@ function runQmdSearch(
       (err, stdout) => {
         if (err) { resolve(""); return; }
         try {
-          // Strip ANSI escape sequences that qmd may emit
           const cleaned = stdout
             .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
             .replace(/\u001b\][^\u0007]*(\u0007|\u001b\\)/g, "");
@@ -131,26 +189,33 @@ function runQmdSearch(
   });
 }
 
-// ─── Mode Selector Component ─────────────────────────────────────────────────
+// ─── Unified Control Panel ───────────────────────────────────────────────────
 
-class ModeSelector implements Component, Focusable {
-  private selectedIndex: number;
+class ControlPanel implements Component, Focusable {
+  private selectedIndex = 0;
   private _focused = true;
-  private onDone: (mode: MemoryMode) => void;
-  private currentMode: MemoryMode;
+  private onDone: (state: PanelState) => void;
+  private state: PanelState;
+  private initialState: PanelState;
   private theme: any;
   private qmdOk: boolean;
+  private selfLearningInstalled: boolean;
+  private piMemoryInstalled: boolean;
 
   constructor(
-    currentMode: MemoryMode,
+    state: PanelState,
     theme: any,
     qmdOk: boolean,
-    onDone: (mode: MemoryMode) => void,
+    selfLearningInstalled: boolean,
+    piMemoryInstalled: boolean,
+    onDone: (state: PanelState) => void,
   ) {
-    this.currentMode = currentMode;
-    this.selectedIndex = MODE_LIST.indexOf(currentMode);
+    this.state = { ...state };
+    this.initialState = { ...state };
     this.theme = theme;
     this.qmdOk = qmdOk;
+    this.selfLearningInstalled = selfLearningInstalled;
+    this.piMemoryInstalled = piMemoryInstalled;
     this.onDone = onDone;
   }
 
@@ -159,33 +224,58 @@ class ModeSelector implements Component, Focusable {
 
   invalidate() {}
 
+  private toggleRow(index: number): void {
+    const row = PANEL_ROWS[index];
+    if (row.type === "toggle") {
+      (this.state as any)[row.key] = !(this.state as any)[row.key];
+    } else if (row.type === "qmd") {
+      const modes: QmdMode[] = ["full", "hybrid", "none"];
+      const currentIdx = modes.indexOf(this.state.qmd);
+      this.state.qmd = modes[(currentIdx + 1) % modes.length];
+    }
+  }
+
   handleInput(data: string): boolean {
     // Navigate
     if (matchesKey(data, Key.up()) || matchesKey(data, Key.left())) {
-      this.selectedIndex = (this.selectedIndex - 1 + MODE_LIST.length) % MODE_LIST.length;
+      this.selectedIndex = (this.selectedIndex - 1 + PANEL_ROWS.length) % PANEL_ROWS.length;
       return true;
     }
     if (matchesKey(data, Key.down()) || matchesKey(data, Key.right())) {
-      this.selectedIndex = (this.selectedIndex + 1) % MODE_LIST.length;
+      this.selectedIndex = (this.selectedIndex + 1) % PANEL_ROWS.length;
       return true;
     }
-    // Confirm
-    if (matchesKey(data, Key.enter())) {
-      this.onDone(MODE_LIST[this.selectedIndex]);
+    // Toggle / Confirm
+    if (matchesKey(data, Key.enter()) || matchesKey(data, Key.tab())) {
+      this.toggleRow(this.selectedIndex);
+      return true;
+    }
+    // Save & Close
+    if (data === "s" || data === "S") {
+      this.onDone(this.state);
       return true;
     }
     // Cancel
     if (matchesKey(data, Key.escape())) {
-      this.onDone(this.currentMode);
+      this.onDone(this.initialState);
       return true;
     }
-    // Quick select 1/2/3
-    if (data === "1") { this.onDone("full"); return true; }
-    if (data === "2") { this.onDone("hybrid"); return true; }
-    if (data === "3") { this.onDone("none"); return true; }
-    // Tab to cycle
-    if (matchesKey(data, Key.tab())) {
-      this.selectedIndex = (this.selectedIndex + 1) % MODE_LIST.length;
+    // Quick keys
+    if (data === "1") { this.selectedIndex = 0; this.toggleRow(0); return true; }
+    if (data === "2") { this.selectedIndex = 1; this.toggleRow(1); return true; }
+    if (data === "3") { this.selectedIndex = 2; this.toggleRow(2); return true; }
+    // Quick QMD modes
+    if (data === "f" || data === "F") { this.state.qmd = "full"; this.selectedIndex = 0; return true; }
+    if (data === "h" || data === "H") { this.state.qmd = "hybrid"; this.selectedIndex = 0; return true; }
+    if (data === "n" || data === "N") { this.state.qmd = "none"; this.selectedIndex = 0; return true; }
+    // Toggle all
+    if (data === "a" || data === "A") {
+      const allOff = this.state.qmd === "none" && !this.state.selfLearning && !this.state.piMemory;
+      if (allOff) {
+        this.state = { qmd: "hybrid", selfLearning: true, piMemory: true };
+      } else {
+        this.state = { qmd: "none", selfLearning: false, piMemory: false };
+      }
       return true;
     }
     return false;
@@ -194,55 +284,120 @@ class ModeSelector implements Component, Focusable {
   render(width: number): string[] {
     const t = this.theme;
     const lines: string[] = [];
-    const w = Math.min(width, 64);
+    const w = Math.min(width, 68);
 
     // Header
     lines.push("");
-    lines.push(`  🔍  QMD Smart Context`);
+    lines.push(`  ⚡  Memory Control Panel`);
     lines.push(`  ${"─".repeat(w - 6)}`);
 
-    // QMD status
-    if (!this.qmdOk) {
-      lines.push(`  ⚠  QMD not detected — install: bun install -g https://github.com/tobi/qmd`);
-      lines.push("");
-    }
-
-    // Mode options
-    for (let i = 0; i < MODE_LIST.length; i++) {
-      const mode = MODE_LIST[i];
-      const config = MODE_CONFIG[mode];
+    // Rows
+    for (let i = 0; i < PANEL_ROWS.length; i++) {
+      const row = PANEL_ROWS[i];
       const isSelected = i === this.selectedIndex;
-      const isCurrent = mode === this.currentMode;
-
       const cursor = isSelected ? " ❯ " : "   ";
-      const check = isCurrent ? " ✓ " : "   ";
-      const num = ` ${i + 1}.`;
 
-      const modeStyle = isSelected
-        ? t.fg("accent", `${num} ${config.icon}  ${config.label}`)
-        : `${num} ${config.icon}  ${config.label}`;
+      if (row.type === "qmd") {
+        const qmd = QMD_LABELS[this.state.qmd];
+        const modeColor = qmd.color;
+        const statusIcon = this.state.qmd !== "none" ? "✓" : " ";
+        const qmdStatus = this.qmdOk ? "✅" : "⚠️";
 
-      const desc = t.fg("muted", ` — ${config.desc}`);
-      const tokenInfo = t.fg("muted", ` (${config.tokens})`);
+        const modeStr = isSelected
+          ? t.fg("accent", `${qmd.icon} ${qmd.label}`)
+          : `${qmd.icon} ${qmd.label}`;
 
-      lines.push(`${cursor}${check}${modeStyle}${desc}`);
-      lines.push(`${cursor}   ${tokenInfo}`);
+        lines.push(`${cursor} ${statusIcon}  ${row.icon}  ${row.label}`);
+        lines.push(`${cursor}       ${t.fg("muted", row.desc)}`);
+
+        const tokenInfo = this.state.qmd === "full" ? "~14K/turn"
+          : this.state.qmd === "hybrid" ? "~100B/turn" : "0/turn";
+
+        lines.push(
+          `${cursor}       Mode: ${modeStr}` +
+          `  ${t.fg("muted", `(${tokenInfo})`)}` +
+          `  ${qmdStatus}`
+        );
+
+      } else {
+        // Toggle
+        const isOn = (this.state as any)[row.key] as boolean;
+        const toggleIcon = isOn ? "●" : "○";
+        const statusIcon = isOn ? "✓" : " ";
+        const toggleColor = isOn ? "green" : "red";
+
+        // Check if extension is installed
+        let installed = true;
+        if (row.key === "selfLearning") installed = this.selfLearningInstalled;
+        if (row.key === "piMemory") installed = this.piMemoryInstalled;
+
+        const toggleStr = isSelected
+          ? t.fg("accent", `${toggleIcon} ${isOn ? "ON" : "OFF"}`)
+          : `${toggleIcon} ${isOn ? "ON" : "OFF"}`;
+
+        lines.push(`${cursor} ${statusIcon}  ${row.icon}  ${row.label}`);
+        lines.push(`${cursor}       ${t.fg("muted", row.desc)}`);
+
+        if (!installed) {
+          lines.push(
+            `${cursor}       ${t.fg("warning", "⚠  Not installed —")}` +
+            ` pi install npm:pi-${row.key === "selfLearning" ? "self-learning" : "memory"}`
+          );
+        } else {
+          const label = isOn ? "active" : "disabled";
+          lines.push(`${cursor}       ${toggleStr}  ${t.fg("muted", `(${label})`)}`);
+        }
+      }
       lines.push("");
     }
+
+    // Estimated token cost
+    const totalTokens = this.estimateTokens();
+    lines.push(`  ${"─".repeat(w - 6)}`);
+    lines.push(`  💰  Est. injection: ${t.fg("accent", totalTokens)}/turn`);
 
     // Footer
     lines.push(`  ${"─".repeat(w - 6)}`);
-    lines.push(`  ↑↓  Navigate    Enter  Select    1/2/3  Quick    Tab  Cycle    Esc  Cancel`);
-
+    lines.push(
+      `  ↑↓ Nav  Enter/Tab Toggle  1/2/3 Quick  ` +
+      `A All  S Save  Esc Cancel`
+    );
+    lines.push(
+      `  F Full  H Hybrid  N None (QMD quick)`
+    );
     lines.push("");
+
     return lines;
   }
+
+  private estimateTokens(): string {
+    if (this.state.qmd === "none" && !this.state.selfLearning && !this.state.piMemory) {
+      return "~0";
+    }
+    let estimate = 0;
+    // QMD
+    if (this.state.qmd === "full") estimate += 14;
+    else if (this.state.qmd === "hybrid") estimate += 0.1;
+    // Self-learning (CORE.md)
+    if (this.state.selfLearning) estimate += 4;
+    // Pi-memory (MEMORY.md + scratchpad + daily)
+    if (this.state.piMemory) estimate += 10;
+    return `~${estimate}K`;
+  }
 }
+
+// ─── Pi-Memory Context Suppression ───────────────────────────────────────────
+//
+// When pi-memory is toggled OFF, we suppress its context injection by
+// overriding the PI_MEMORY_NO_SEARCH env var before its before_agent_start
+// handler runs. We use a high-priority hook.
 
 // ─── Extension ───────────────────────────────────────────────────────────────
 
 export default function qmdSmartExtension(pi: ExtensionAPI) {
-  let currentMode = loadState();
+  let state = loadState();
+  let selfLearningInstalled = false;
+  let piMemoryInstalled = false;
 
   // ── recall tool ──────────────────────────────────────────────────────────
 
@@ -256,10 +411,7 @@ export default function qmdSmartExtension(pi: ExtensionAPI) {
     parameters: {
       type: "object" as const,
       properties: {
-        query: {
-          type: "string" as const,
-          description: "What to search for",
-        },
+        query: { type: "string" as const, description: "What to search for" },
         mode: {
           type: "string" as const,
           enum: ["keyword", "semantic", "deep"],
@@ -273,8 +425,7 @@ export default function qmdSmartExtension(pi: ExtensionAPI) {
       required: ["query"],
     },
     execute: async (_toolCallId: string, args: any) => {
-      // Check mode
-      if (currentMode === "none") {
+      if (state.qmd === "none") {
         return {
           content: [{
             type: "text" as const,
@@ -283,7 +434,6 @@ export default function qmdSmartExtension(pi: ExtensionAPI) {
         };
       }
 
-      // Check QMD
       if (!qmdAvailable) {
         return {
           content: [{
@@ -295,8 +445,7 @@ export default function qmdSmartExtension(pi: ExtensionAPI) {
 
       const query = String(args.query || "").trim();
       const searchMode = args.mode === "semantic" ? "semantic"
-        : args.mode === "deep" ? "deep"
-        : "keyword";
+        : args.mode === "deep" ? "deep" : "keyword";
       const limit = Math.min(Number(args.limit) || 5, 20);
 
       if (!query) {
@@ -315,30 +464,25 @@ export default function qmdSmartExtension(pi: ExtensionAPI) {
             }],
           };
         }
-        return {
-          content: [{ type: "text" as const, text: results }],
-        };
+        return { content: [{ type: "text" as const, text: results }] };
       } catch (err: any) {
-        return {
-          content: [{ type: "text" as const, text: `Search error: ${err.message}` }],
-        };
+        return { content: [{ type: "text" as const, text: `Search error: ${err.message}` }] };
       }
     },
   });
 
-  // ── Context injection hook ──────────────────────────────────────────────
+  // ── Context injection hook (QMD only) ────────────────────────────────────
 
   pi.on("before_agent_start", async (event: any) => {
-    if (currentMode === "none") return;
+    const modifications: { systemPrompt?: string } = {};
 
-    // FULL: auto-search and inject results
-    if (currentMode === "full") {
+    // ── QMD injection ──
+    if (state.qmd === "full") {
       if (!qmdAvailable) return;
 
       const prompt = (event.prompt ?? "").trim().slice(0, 200);
       if (!prompt) return;
 
-      // Sanitize for search
       const sanitized = prompt.replace(/[\x00-\x1f\x7f]/g, " ").trim();
       if (!sanitized) return;
 
@@ -350,47 +494,67 @@ export default function qmdSmartExtension(pi: ExtensionAPI) {
           ),
         ]);
 
-        if (!results) return;
-
-        const injection = [
-          "",
-          "## Relevant Past Context (QMD auto-search)",
-          "The following were found by searching your notes for: \"" + sanitized.slice(0, 80) + "\"",
-          "",
-          results,
-        ].join("\n");
-
-        return { systemPrompt: event.systemPrompt + injection };
+        if (results) {
+          const injection = [
+            "",
+            "## Relevant Past Context (QMD auto-search)",
+            `Found by searching: "${sanitized.slice(0, 80)}"`,
+            "",
+            results,
+          ].join("\n");
+          modifications.systemPrompt = event.systemPrompt + injection;
+        }
       } catch {
-        // Timeout or error — skip silently
-        return;
+        // Timeout — skip silently
       }
     }
 
-    // HYBRID: light hint only
-    if (currentMode === "hybrid") {
-      return {
-        systemPrompt: event.systemPrompt +
-          "\n\nUse the `recall` tool to search past context, decisions, and notes when needed. " +
-          "This is more token-efficient than auto-injection — only search when the user asks about past context or you need historical information.",
-      };
+    if (state.qmd === "hybrid") {
+      modifications.systemPrompt = (modifications.systemPrompt ?? event.systemPrompt) +
+        "\n\nUse the `recall` tool to search past context, decisions, and notes when needed. " +
+        "This is more token-efficient than auto-injection — only search when the user asks about past context or you need historical information.";
     }
+
+    // ── Pi-Memory suppression ──
+    // When piMemory is OFF, set env var to suppress pi-memory's auto-injection
+    if (!state.piMemory) {
+      process.env.PI_MEMORY_NO_SEARCH = "1";
+    } else {
+      // Only clear it if we originally set it
+      delete process.env.PI_MEMORY_NO_SEARCH;
+    }
+
+    // ── Self-Learning suppression ──
+    // When selfLearning is OFF, set env var to suppress pi-self-learning
+    if (!state.selfLearning) {
+      process.env.PI_SELF_LEARNING_DISABLED = "1";
+    } else {
+      delete process.env.PI_SELF_LEARNING_DISABLED;
+    }
+
+    return Object.keys(modifications).length > 0 ? modifications : undefined;
   });
 
-  // ── Mode selector ───────────────────────────────────────────────────────
+  // ── Control Panel ────────────────────────────────────────────────────────
 
-  const openModeSelector = async (ctx: ExtensionContext) => {
+  const openControlPanel = async (ctx: ExtensionContext) => {
     try {
-      const selected = await (ctx as any).ui.custom<MemoryMode>(
-        (tui: any, theme: any, _keybindings: any, done: (mode: MemoryMode) => void) => {
-          const selector = new ModeSelector(currentMode, theme, qmdAvailable, (mode) => done(mode));
-          return selector;
+      const selected = await (ctx as any).ui.custom<PanelState>(
+        (tui: any, theme: any, _keybindings: any, done: (s: PanelState) => void) => {
+          const panel = new ControlPanel(
+            state, theme,
+            qmdAvailable,
+            selfLearningInstalled,
+            piMemoryInstalled,
+            (newState) => done(newState),
+          );
+          return panel;
         },
         {
           overlay: true,
           overlayOptions: {
-            width: "70%",
-            maxHeight: "50%",
+            width: "75%",
+            maxHeight: "60%",
             anchor: "bottom-center" as const,
             margin: { top: 0, bottom: 2, left: 2, right: 2 },
             nonCapturing: true,
@@ -398,48 +562,102 @@ export default function qmdSmartExtension(pi: ExtensionAPI) {
         },
       );
 
-      if (selected && selected !== currentMode) {
-        currentMode = selected;
-        saveState(currentMode);
-        const config = MODE_CONFIG[currentMode];
-        try {
-          (ctx as any).ui.notify(
-            `🔍 QMD → ${config.icon} ${config.label} — ${config.desc}`,
-            currentMode === "none" ? "warning" : "info",
-          );
-        } catch { /* notify not available */ }
+      if (selected) {
+        const changed =
+          selected.qmd !== state.qmd ||
+          selected.selfLearning !== state.selfLearning ||
+          selected.piMemory !== state.piMemory;
+
+        state = { ...selected };
+        saveState(state);
+
+        if (changed) {
+          // Apply env var changes immediately
+          if (!state.piMemory) {
+            process.env.PI_MEMORY_NO_SEARCH = "1";
+          } else {
+            delete process.env.PI_MEMORY_NO_SEARCH;
+          }
+          if (!state.selfLearning) {
+            process.env.PI_SELF_LEARNING_DISABLED = "1";
+          } else {
+            delete process.env.PI_SELF_LEARNING_DISABLED;
+          }
+
+          const parts: string[] = [];
+          const qmdCfg = QMD_LABELS[state.qmd];
+          parts.push(`QMD ${qmdCfg.icon} ${qmdCfg.label}`);
+          parts.push(`🧠 ${state.selfLearning ? "ON" : "OFF"}`);
+          parts.push(`📝 ${state.piMemory ? "ON" : "OFF"}`);
+
+          try {
+            (ctx as any).ui.notify(
+              `⚡ Memory: ${parts.join(" | ")} — ~${estimateTokens(state)}K/turn`,
+              "info",
+            );
+          } catch { /* notify not available */ }
+        }
       }
     } catch {
       // Overlay blocked or dismissed
     }
   };
 
+  function estimateTokens(s: PanelState): number {
+    let e = 0;
+    if (s.qmd === "full") e += 14;
+    else if (s.qmd === "hybrid") e += 0.1;
+    if (s.selfLearning) e += 4;
+    if (s.piMemory) e += 10;
+    return Math.round(e * 10) / 10;
+  }
+
   // ── Shortcut ────────────────────────────────────────────────────────────
 
   pi.registerShortcut("ctrl+alt+m", {
-    description: "Toggle QMD memory mode (full/hybrid/none)",
-    handler: (_event: any, ctx: ExtensionContext) => openModeSelector(ctx),
+    description: "Open memory control panel",
+    handler: (_event: any, ctx: ExtensionContext) => openControlPanel(ctx),
   });
 
-  // ── Command ─────────────────────────────────────────────────────────────
+  // ── Commands ────────────────────────────────────────────────────────────
 
   pi.registerCommand("qmd", {
-    description: "Open QMD memory mode selector",
-    handler: (_args: any, ctx: ExtensionContext) => openModeSelector(ctx),
+    description: "Open memory control panel",
+    handler: (_args: any, ctx: ExtensionContext) => openControlPanel(ctx),
+  });
+
+  pi.registerCommand("memory", {
+    description: "Open memory control panel",
+    handler: (_args: any, ctx: ExtensionContext) => openControlPanel(ctx),
   });
 
   // ── Startup ─────────────────────────────────────────────────────────────
 
   pi.on("session_start", async (_event: any, ctx: ExtensionContext) => {
-    // Detect QMD availability
     qmdAvailable = await detectQmd();
+    selfLearningInstalled = detectSelfLearning();
+    piMemoryInstalled = detectPiMemory();
 
-    const config = MODE_CONFIG[currentMode];
-    const qmdStatus = qmdAvailable ? "✅" : "⚠️  qmd not found";
+    // Apply saved state as env vars
+    if (!state.piMemory) {
+      process.env.PI_MEMORY_NO_SEARCH = "1";
+    }
+    if (!state.selfLearning) {
+      process.env.PI_SELF_LEARNING_DISABLED = "1";
+    }
+
+    const qmdCfg = QMD_LABELS[state.qmd];
+    const qmdStatus = qmdAvailable ? "✅" : "⚠️";
+    const parts: string[] = [
+      `QMD ${qmdCfg.icon} ${qmdCfg.label} ${qmdStatus}`,
+      `🧠 ${state.selfLearning ? "ON" : "OFF"}`,
+      `📝 ${state.piMemory ? "ON" : "OFF"}`,
+    ];
+
     try {
       (ctx as any).ui.notify(
-        `🔍 QMD ${config.icon} ${config.label} — ${config.tokens}  |  ${qmdStatus}`,
-        qmdAvailable ? "info" : "warning",
+        `⚡ Memory Panel: ${parts.join(" | ")} — ~${estimateTokens(state)}K/turn`,
+        "info",
       );
     } catch { /* notify not available */ }
   });
